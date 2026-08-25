@@ -1,4 +1,4 @@
-#Deployment of website using Jenkins, SonarQube and Docker with AWS EC2 instances
+# Deployment of website using Jenkins, SonarQube and Docker with AWS EC2 instances
 
 This project is a tier-1 website deployed on an AWS EC2 instances using Docker(Nginx), Jenkins, and SonarQube.
 
