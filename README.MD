@@ -1,23 +1,23 @@
-# AWS EC2 Deployment with Docker, Jenkins, and SonarQube
+#Deployment of website using Jenkins, SonarQube and Docker with AWS EC2 instances
 
-This project is a static website deployed on an AWS EC2 instance using Docker, Jenkins, and SonarQube.
+This project is a tier-1 website deployed on an AWS EC2 instances using Docker(Nginx), Jenkins, and SonarQube.
 
 ## Architecture
 
-Developer -> GitHub -> Jenkins -> Docker Build -> SonarQube Analysis -> EC2 Deployment
+Developer -> GitHub -> Jenkins -> SonarQube Analysis -> Docker Build -> EC2 Deployment
 
 ## Prerequisites
 
-- AWS EC2 Ubuntu instance
+- AWS EC2 Ubuntu instances (We are using three separate EC2 instances)
 - SSH access
 - Docker installed on the EC2 instance
-- Jenkins running in Docker
-- SonarQube running in Docker
+- Jenkins installed on the EC2 instance
+- SonarQube installed on the EC2 instance
 
 ## 1. Connect to EC2
 
 ```bash
-ssh -i your-key.pem ubuntu@your-ec2-public-ip
+ssh -i "your-key.pem" ubuntu@your-ec2-public-ip
 ```
 
 ## 2. Install Docker
