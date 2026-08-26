@@ -60,7 +60,7 @@ sudo apt update && sudo apt upgrade -y
 
 ## 2. Install Jenkins Directly on the Jenkins EC2 Instance
 
-Jenkins is installed as a native system service, not inside Docker. Install Java and the official Jenkins package:
+Jenkins is installed as a native system service. Install Java and the official Jenkins package:
 
 ```bash
 sudo apt update
@@ -86,7 +86,21 @@ Open `http://<jenkins-ec2-ip>:8080` and get the initial password:
 sudo cat /var/lib/jenkins/secrets/initialAdminPassword
 ```
 
-Install these plugins: **Pipeline**, **Git**, **GitHub Integration**, **Docker Pipeline**, **SonarQube Scanner**, and **Credentials Binding**. Create a Pipeline job that loads the `Jenkinsfile` from GitHub, then enable **GitHub hook trigger for GITScm polling**.
+Install these plugins: **Pipeline**, **Git**, **GitHub Integration**, **Docker Pipeline**, **SonarQube Scanner**, and **Credentials Binding**. Create a job that loads the , then enable **GitHub hook trigger for GITScm polling**.
+
+In the Build steps section of the Pipeline configuration we have to add the following:
+
+Analysis properties: sonar.projectKey=luminary-project-cicd
+Go to the Add Build Step and select Execute shell and paste the command scp -r ./* ubuntu@<your docker ip>:~/website/
+
+Add one more step Remote Shell, now in the target servers there is automatically a target server with the docker instance ip.And then in the shell write the commands:
+```bash
+cd /home/ubuntu/website
+docker build -t mywebsite .
+docker run -d -p 8085:80 --name=tier1website mywebsite
+```
+
+Naming convention upto you.
 
 ## 4. Connect GitHub to Jenkins with a Webhook
 
@@ -94,8 +108,8 @@ In GitHub, open **Repository Settings > Webhooks > Add webhook**:
 
 ```text
 Payload URL: http://<jenkins-ec2-ip>:8080/github-webhook/
-Content type: application/json
-Events: Just the push event
+Content type: application/x-www-form-urlencoded
+Events: Pushes and Pull Requests event
 Active: enabled
 ```
 
@@ -104,11 +118,8 @@ Every push now sends a webhook to Jenkins and starts the pipeline.
 ## 5. Install SonarQube on Its Separate EC2 Instance
 
 ```bash
-docker run -d \
-  --name sonarqube \
-  -p 9000:9000 \
-  --restart unless-stopped \
-  sonarqube:lts-community
+wget https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-26.8.0.126808.zip
+unzip <zip-file-name>
 ```
 
 Open `http://<sonarqube-ec2-ip>:9000` and sign in with `admin` / `admin`. Create a project such as `luminary-site`, generate a project token, and save it in Jenkins as a **Secret text** credential with ID `sonarqube-token`.
@@ -118,9 +129,11 @@ In **Manage Jenkins > System > SonarQube servers**, add:
 ```text
 Name: sonarqube
 Server URL: http://<sonarqube-ec2-ip>:9000
+Key statement: sonar.projectKey=luminary-project-cicd
+Actual Key: <your key>
 ```
+Copy this key this is available only once and then paste it into the jenkins.
 
-Install the SonarScanner CLI on the Jenkins instance or configure it under **Manage Jenkins > Tools**. Jenkins will connect to the SonarQube server over its private IP.
 
 ## 6. Install Docker on the Deployment EC2 Instance
 
@@ -145,11 +158,7 @@ docker --version
 The repository `Dockerfile` copies the website into the official Nginx image:
 
 ```bash
-git clone https://github.com/<github-user>/<repository>.git
-cd <repository>
-docker build -t luminary-site:latest .
-docker rm -f luminary-site 2>/dev/null || true
-docker run -d --name luminary-site --restart unless-stopped -p 80:80 luminary-site:latest
+
 ```
 
 
@@ -189,3 +198,7 @@ curl -I http://<deployment-ec2-ip>
 6. Jenkins connects to the deployment EC2 instance over SSH.
 7. The deployment server builds and runs the Docker image with Nginx on port `80`.
 8. Visitors open the deployment IP or domain name to see the website.
+
+![CICD Image](<Screenshot 2026-08-24 011640-1.png>)
+
+![How to start Sonarqube](<Screenshot 2026-08-24 201709.png>)
