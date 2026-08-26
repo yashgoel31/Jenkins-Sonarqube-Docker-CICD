@@ -1,219 +1,191 @@
-# Deployment of website using Jenkins, SonarQube and Docker with AWS EC2 instances
+# CI/CD Pipeline with GitHub, Jenkins, SonarQube, Docker and Nginx
 
-This project is a tier-1 website deployed on an AWS EC2 instances using Docker(Nginx), Jenkins, and SonarQube.
+This project demonstrates a CI/CD pipeline for deploying a static website to AWS EC2. The infrastructure is split across separate EC2 instances so that each service has a clear responsibility.
 
 ## Architecture
 
-Developer -> GitHub -> Jenkins -> SonarQube Analysis -> Docker Build -> EC2 Deployment
+```text
+Developer -> GitHub -- webhook --> Jenkins EC2
+                                  |
+                                  v
+                         SonarQube EC2 (analysis)
+                                  |
+                         quality gate passes
+                                  v
+                    Deployment EC2 (Docker + Nginx)
+                                  |
+                                  v
+                         Website on port 80
+```
+
+## EC2 Instances
+
+| Instance | Responsibility | Main port |
+| --- | --- | --- |
+| Jenkins | Receives the GitHub webhook and runs the pipeline | `8080` |
+| SonarQube | Analyses source code and reports the quality gate | `9000` |
+| Deployment | Runs the Docker image with Nginx | `80` |
+
+Use Ubuntu instances and replace these placeholders with your own addresses:
+
+```text
+JENKINS_IP=<jenkins-ec2-ip>
+SONARQUBE_IP=<sonarqube-ec2-ip>
+DEPLOYMENT_IP=<deployment-ec2-ip>
+```
 
 ## Prerequisites
 
-- AWS EC2 Ubuntu instances (We are using three separate EC2 instances)
-- SSH access
-- Docker installed on the EC2 instance
-- Jenkins installed on the EC2 instance
-- SonarQube installed on the EC2 instance
+- Three Ubuntu AWS EC2 instances with SSH access
+- A GitHub repository containing this project and a `Jenkinsfile`
+- Jenkins installed directly on the Jenkins instance
+- SonarQube installed on its separate EC2 instance
+- Docker installed only on the deployment instance
+- AWS security groups configured for the ports listed below
 
 ## 1. Connect to EC2
 
+Run this from your local machine for each instance:
+
 ```bash
-ssh -i "your-key.pem" ubuntu@your-ec2-public-ip
+chmod 400 your-key.pem
+ssh -i "your-key.pem" ubuntu@<ec2-ip>
 ```
 
-## 2. Install Docker
+Update each instance:
+
+```bash
+sudo apt update && sudo apt upgrade -y
+```
+
+## 2. Install Jenkins Directly on the Jenkins EC2 Instance
+
+Jenkins is installed as a native system service, not inside Docker. Install Java and the official Jenkins package:
 
 ```bash
 sudo apt update
-sudo apt install -y ca-certificates curl gnupg lsb-release
-
-sudo mkdir -p /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-  $(. /etc/os-release && echo $VERSION_CODENAME) stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-sudo apt update
-sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-sudo systemctl enable docker
-sudo systemctl start docker
-sudo usermod -aG docker $USER
-newgrp docker
+sudo apt install -y fontconfig openjdk-17-jre
+java -version
+sudo wget -O /usr/share/keyrings/jenkins-keyring.asc \
+    https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
 ```
 
-## 3. Run Jenkins in Docker
+Use the official repository and start Jenkins:
 
 ```bash
-docker volume create jenkins_home
-
-docker run -d \
-  --name jenkins \
-  -p 8080:8080 \
-  -p 50000:50000 \
-  -v jenkins_home:/var/jenkins_home \
-  --restart unless-stopped \
-  jenkins/jenkins:lts
+echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" | sudo tee /etc/apt/sources.list.d/jenkins.list > /dev/null
+sudo apt update
+sudo apt install -y jenkins
+sudo systemctl enable --now jenkins
+sudo systemctl status jenkins
 ```
 
-Open:
+Open `http://<jenkins-ec2-ip>:8080` and get the initial password:
+
+```bash
+sudo cat /var/lib/jenkins/secrets/initialAdminPassword
+```
+
+Install these plugins: **Pipeline**, **Git**, **GitHub Integration**, **Docker Pipeline**, **SonarQube Scanner**, and **Credentials Binding**. Create a Pipeline job that loads the `Jenkinsfile` from GitHub, then enable **GitHub hook trigger for GITScm polling**.
+
+## 4. Connect GitHub to Jenkins with a Webhook
+
+In GitHub, open **Repository Settings > Webhooks > Add webhook**:
 
 ```text
-http://<your-ec2-public-ip>:8080
+Payload URL: http://<jenkins-ec2-ip>:8080/github-webhook/
+Content type: application/json
+Events: Just the push event
+Active: enabled
 ```
 
-Get the admin password:
+Every push now sends a webhook to Jenkins and starts the pipeline.
 
-```bash
-docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword
-```
-
-Install required Jenkins plugins:
-- Git
-- GitHub
-- Docker Pipeline
-- Docker Commons
-- SonarQube Scanner
-
-## 4. Run SonarQube in Docker
+## 5. Install SonarQube on Its Separate EC2 Instance
 
 ```bash
 docker run -d \
   --name sonarqube \
   -p 9000:9000 \
-  -p 9092:9092 \
+  --restart unless-stopped \
   sonarqube:lts-community
 ```
 
-Open:
+Open `http://<sonarqube-ec2-ip>:9000` and sign in with `admin` / `admin`. Create a project such as `luminary-site`, generate a project token, and save it in Jenkins as a **Secret text** credential with ID `sonarqube-token`.
+
+In **Manage Jenkins > System > SonarQube servers**, add:
 
 ```text
-http://<your-ec2-public-ip>:9000
+Name: sonarqube
+Server URL: http://<sonarqube-ec2-ip>:9000
 ```
 
-Login:
-- Username: admin
-- Password: admin
+Install the SonarScanner CLI on the Jenkins instance or configure it under **Manage Jenkins > Tools**. Jenkins will connect to the SonarQube server over its private IP.
 
-Generate a project token in SonarQube and add it to Jenkins as a secret.
+## 6. Install Docker on the Deployment EC2 Instance
 
-## 5. Create Dockerfile
-
-```dockerfile
-FROM nginx:alpine
-COPY . /usr/share/nginx/html
-EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
-```
-
-Build image:
+Docker is installed only at the last stage, on the server that hosts the website. Run these commands on the deployment instance:
 
 ```bash
-docker build -t my-static-site:latest .
+sudo apt install -y ca-certificates curl gnupg
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"
+newgrp docker
+docker --version
 ```
 
-Run container:
+## 7. Prepare the Deployment EC2 Instance
+
+The repository `Dockerfile` copies the website into the official Nginx image:
 
 ```bash
-docker run -d --name my-static-site -p 80:80 my-static-site:latest
+git clone https://github.com/<github-user>/<repository>.git
+cd <repository>
+docker build -t luminary-site:latest .
+docker rm -f luminary-site 2>/dev/null || true
+docker run -d --name luminary-site --restart unless-stopped -p 80:80 luminary-site:latest
 ```
 
-## 6. Jenkins Pipeline Example
 
-Create a `Jenkinsfile`:
+Configure SSH from Jenkins to the deployment instance using an SSH key credential or by adding the Jenkins public key with `ssh-copy-id`. The Jenkins instance needs `sonar-scanner`, `ssh`, and `scp`; it does not need Docker.
 
-```groovy
-pipeline {
-    agent any
+## 8. AWS Security Group Rules
 
-    environment {
-        SONAR_TOKEN = credentials('sonarqube-token')
-        IMAGE_NAME = 'my-static-site'
-    }
+- `22/tcp`: SSH, restricted to your IP or trusted security group
+- `80/tcp`: HTTP, open to website visitors
+- `8080/tcp`: Jenkins, restricted to administrators and GitHub webhook traffic
+- `9000/tcp`: SonarQube, restricted to Jenkins and administrators
+- `50000/tcp`: Jenkins agents only, if inbound agents are used
 
-    stages {
-        stage('Checkout') {
-            steps {
-                git 'https://github.com/your-username/your-repo.git'
-            }
-        }
+Prefer private IPs and security-group-to-security-group rules for Jenkins-to-SonarQube and Jenkins-to-deployment traffic.
 
-        stage('Build Docker Image') {
-            steps {
-                sh 'docker build -t ${IMAGE_NAME}:latest .' 
-            }
-        }
-
-        stage('SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv('sonarqube') {
-                    sh '''
-                        sonar-scanner \
-                        -Dsonar.projectKey=my-static-site \
-                        -Dsonar.sources=. \
-                        -Dsonar.host.url=http://<your-ec2-public-ip>:9000 \
-                        -Dsonar.login=${SONAR_TOKEN}
-                    '''
-                }
-            }
-        }
-
-        stage('Deploy') {
-            steps {
-                sh 'docker rm -f my-static-site || true'
-                sh 'docker run -d --name my-static-site -p 80:80 ${IMAGE_NAME}:latest'
-            }
-        }
-    }
-}
-```
-
-## 7. Useful Commands
+## Useful Commands
 
 ```bash
 docker ps
-docker ps -a
-docker logs -f jenkins
-docker logs -f sonarqube
-docker stop my-static-site
-docker rm my-static-site
 docker images
+sudo systemctl status jenkins
+sudo journalctl -u jenkins -f
+docker logs -f sonarqube
+docker logs -f luminary-site
+docker restart luminary-site
+sudo ss -tulpn
+curl -I http://<deployment-ec2-ip>
 ```
 
-## 8. Security Group Rules
+## Complete Workflow
 
-Allow these ports in AWS EC2 Security Group:
-- 22 (SSH)
-- 80 (HTTP)
-- 443 (HTTPS)
-- 8080 (Jenkins)
-- 9000 (SonarQube)
-
-## 9. Final Workflow
-
-1. Push code to GitHub
-2. Jenkins pulls the code
-3. Jenkins builds Docker image
-4. SonarQube scans the code
-5. Jenkins deploys the app on EC2
-
-## 10. Quick Start
-
-```bash
-ssh -i your-key.pem ubuntu@your-ec2-public-ip
-
-sudo apt update && sudo apt install -y docker.io
-sudo usermod -aG docker $USER
-newgrp docker
-
-docker volume create jenkins_home
-docker run -d --name jenkins -p 8080:8080 -p 50000:50000 -v jenkins_home:/var/jenkins_home jenkins/jenkins:lts
-
-docker run -d --name sonarqube -p 9000:9000 sonarqube:lts-community
-
-docker build -t my-static-site:latest .
-docker run -d --name my-static-site -p 80:80 my-static-site:latest
-```
-
-This is a basic CI/CD setup for deploying a teir-1 project on AWS EC2 using Docker, Jenkins, and SonarQube.
+1. The developer pushes code to GitHub.
+2. GitHub sends a webhook to Jenkins.
+3. Jenkins checks out the repository on its native Jenkins installation.
+4. Jenkins sends the source code to SonarQube on its separate EC2 instance.
+5. The pipeline stops if the SonarQube quality gate fails.
+6. Jenkins connects to the deployment EC2 instance over SSH.
+7. The deployment server builds and runs the Docker image with Nginx on port `80`.
+8. Visitors open the deployment IP or domain name to see the website.
